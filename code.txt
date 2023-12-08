@@ -1,0 +1,316 @@
+TIMER0      EQU     0600H       ;IOY0 
+TIMER1      EQU     0602H 
+TIMER2      EQU     0604H 
+TIMERM     EQU     0606H
+P8255A      EQU     0640H       ;IOY1
+P8255B      EQU     0642H 
+P8255C      EQU     0644H 
+P8255M      EQU     0646H
+;---------------------------------------------------------------
+DATA        SEGMENT 
+DISCODE     DB      3FH,06H,5BH,4FH,66H,6DH,7DH,07H     ;0--7的显示代码
+              DB      7FH,6FH,77H,7CH,39H,5EH,79H,71H     ;8--F的显示代码
+STA          DB      00H	
+TIME         DW      500		
+COUNT       DB      100
+DATA         ENDS
+SSTACK      SEGMENT PARA    STACK   'STACK'
+              DW      32  DUP(?)
+SSTACK      ENDS
+CODE        SEGMENT 
+              ASSUME  CS:CODE, DS:DATA,SS: SSTACK			
+START:       MOV     AX,DATA	
+             MOV     DS,AX
+;--------------------------------------------------------------- 8255初始化
+INITA:      MOV     DX, P8255M 
+            MOV     AL, 90H 
+            OUT     DX, AL 
+            MOV     DX, P8255B 
+            MOV     AL, 0FFH 
+            OUT     DX, AL 
+;--------------------------------------------------------------- 中断芯片8259
+INITB:      PUSH     DS
+            MOV     AX,0000H	
+            MOV     DS,AX
+		
+            MOV     AX,OFFSET	 MIR7
+            MOV     SI,003CH
+            MOV     [SI],AX
+            MOV     AX,CS
+            MOV     SI,003EH
+            MOV     [SI],AX
+
+            MOV     AX,OFFSET	 MIR6
+            MOV     SI,0038H
+            MOV     [SI],AX
+            MOV     AX,CS
+            MOV     SI,003AH
+            MOV     [SI],AX
+
+            MOV     AX, OFFSET	 SIR1 
+            MOV     SI, 00C4H 
+            MOV     [SI], AX 
+            MOV     AX, CS 
+            MOV     SI, 00C6H 
+            MOV     [SI], AX
+ 
+            CLI	
+            POP     DS		
+;---------------------------------------------------------------主片
+            MOV     AL,11H
+            OUT     20H,AL          ;ICW1
+            MOV     AL,08H
+            OUT     21H,AL          ;ICW2
+            MOV     AL,04H
+            OUT     21H,AL          ;ICW3
+            MOV     AL,01H
+            OUT     21H,AL          ;ICW4
+;-------------------------------------------------------------初始化从片8259 
+            MOV     AL, 11H 
+            OUT     0A0H, AL        ;ICW1 
+            MOV     AL, 30H 
+            OUT     0A1H, AL        ;ICW2 
+            MOV     AL, 02H 
+            OUT     0A1H, AL        ;ICW3 
+            MOV     AL, 01H 
+            OUT     0A1H, AL        ;ICW4
+;--------------------------------------------------------------- 
+            MOV     AL, 0FDH        ;OCW1 = 1111 1101B
+            OUT     0A1H,AL 		
+            MOV     AL,2BH          ;OCW1 = 00101011B
+            OUT     21H,AL	
+            STI	
+;--------------------------------------------------------------- 定时器芯片
+INITC:      MOV     DX, TIMERM      ;8254控制字 
+            MOV     AL, 36H         ;计数器0，方式3 
+            OUT     DX, AL 
+            MOV     DX, TIMER0
+            MOV     AX, 20000 
+            OUT     DX, AL 
+            MOV     AL, AH
+            OUT     DX, AL 
+            MOV     DX, TIMERM      ;8254控制字 
+            MOV     AL, 76H         ;计数器1，方式3 
+            OUT     DX, AL
+            MOV     DX, TIMER1
+            MOV     AX, 1000 
+            OUT     DX, AL 
+            MOV     AL, AH 
+            OUT     DX, AL 
+;--------------------------------------------------------------- 8255初始化
+INITD:      NOP
+;--------------------------------------------------------------- 
+BEGIN:      NOP
+AA2:        JMP     AA2
+;--------------------------------------------------------------- 
+MIR7        PROC    NEAR
+            PUSH    AX
+            PUSH    DX
+            MOV     AX,0137H
+            INT     10H             ;显示字符7
+            MOV     AX,0120H
+            INT     10H
+            MOV AL,STA
+            CMP AL,01H
+            JNZ M7END;状态位不是01的话就结束  可能存在一个刚按下start就来中断的情况  需要在start里面重新初始化8254
+            MOV  DX,21H
+            IN    AL,DX
+            OR   AL,11000000B;关中断
+            OUT  DX,AL
+            ;----------选手灯全灭
+            MOV  DX,  P8255C
+            MOV  AL,  10000000B;状态灯pc7 pc6    1  0 代表无人抢答       
+            OUT   DX,  AL
+            MOV   DX,  P8255B
+            MOV   AL,  0;全灭代表8.亮
+            OUT   DX,  AL
+            MOV  AL,   10H
+            MOV  STA,  AL
+   M7END:   MOV     AL,20H
+            OUT     20H,AL
+            POP     DX
+            POP     AX			
+            RET
+MIR7        ENDP
+;--------------------------------------------------------------- 
+MIR6        PROC    NEAR
+            PUSH    AX
+            PUSH    DX
+            MOV     AX,0136H
+            INT     10H             ;显示字符6
+            MOV     AX,0120H
+            INT     10H
+			MOV  BX,  TIME
+			DEC  BX
+			MOV  TIME,  BX
+			JNZ   SWAP
+			CALL  MIR7
+    SWAP:   MOV  DX,  P8255A
+             IN   AL,  DX
+    CK_STA: MOV  AH,  STA
+            CMP   AH,  01H
+            JNZ   M6END;检测状态位是否为01H
+    CK_K:   TEST  AL,  0FFH
+            JZ  M6END	
+            MOV  DX,  21H;想读中断控制字，屏蔽MIR7MIR6和
+            IN  AL,  DX
+            OR  AL,  11000000B;开中断交给SIR1
+            OUT  DX,  AL
+            CALL  SWITCH;今晚调通
+            MOV  STA,11H;转换状态
+            M6END:   MOV     AL,20H
+            OUT     20H,AL  
+            POP     DX
+            POP     AX			
+            IRET
+MIR6        ENDP	
+SIR1        PROC    NEAR
+            PUSH    AX
+            PUSH    DX
+            MOV     AX,0131H
+            INT     10H             ;显示字符1
+            MOV     AX,0120H
+            INT     10H
+       MOV  DX, 21H
+            IN  AL, DX
+           	MOV  TIME,500;这里重新对time进行处理
+	        	CALL  ALTER	;调用状态转换函数
+            MOV     AL, 20H 
+            OUT     0A0H, AL 
+            OUT     20H, AL
+            POP     DX
+            POP     AX			
+            IRET
+SIR1        ENDP
+
+;---------------------------------------------------以下为子程序
+DELAY:      PUSH    SI
+            PUSH    CX
+            MOV     SI,	00FFH
+D11:        MOV     CX,	00FFH
+D22:        LOOP    D22
+            DEC     SI
+            JNZ     D11             ;延时结束
+            POP     CX              
+            POP     SI
+            RET
+;---------------------------------------------------------------
+ALTER       PROC    NEAR
+            PUSH    AX
+            MOV     AL,STA
+            TEST    AL,01H
+            JZ      EVEN1
+ODD1:       MOV     STA,0
+            CALL    SUBR1
+            JMP     DONE2
+EVEN1:      MOV     STA,01H
+            CALL    SUBR2
+DONE2:      POP     AX
+            RET
+ALTER       ENDP
+SUBR1       PROC    NEAR
+            PUSH    AX
+            PUSH    DX
+            ;---------选手灯，数码管全灭,状态转换为00H PC7 PC6灯的问题
+            MOV DX,P8255C
+            MOV AL,00H
+            OUT DX,AL
+            MOV DX,P8255B
+            MOV AL,0FFH
+            OUT DX,AL
+            	POP     DX
+            POP     AX
+            RET
+SUBR1       ENDP
+SUBR2       PROC    NEAR
+            PUSH    AX
+            PUSH    DX
+              ;-----------------准备干活了  确保10s中断不会被打断
+            MOV DX,P8255C
+            IN AL,DX
+            MOV AL,01000000B;01H红绿灯
+            OUT DX,AL
+            ;----------------------------------重新初始化8254 防止出现不到十秒就中断的情况
+            MOV     DX, TIMER0
+            MOV     AX, 20000
+            OUT     DX, AL 
+            MOV     AL, AH
+            OUT     DX, AL
+            MOV     DX, TIMER1
+            MOV     AX, 1000 
+            OUT     DX, AL 
+            MOV     AL, AH 
+            OUT     DX, AL  
+            ;--------------------------------
+            IN AL,21H
+            AND AL,00111111B;允许中断
+            OUT 21H,AL
+            ;-------------------------------
+            POP     DX
+            POP     AX
+            RET
+SUBR2       ENDP
+SWITCH		PROC  		NEAR				; 
+			PUSH	AX
+			PUSH	DX
+	        MOV     DX,P8255A	 ;判断A口开关状态
+	  		IN		AL,DX
+	  		MOV DX,P8255C
+	  		OR AL,0C0H
+	  		OUT DX,AL
+	  		MOV     DX,P8255A
+	  		TEST	AL,01H
+			JNZ		K1
+			TEST	AL,02H
+			JNZ		K2
+			TEST	AL,04H
+			JNZ		K3
+			TEST	AL,08H
+			JNZ		K4
+			TEST	AL,10H
+			JNZ		K5
+			TEST	AL,20H
+			JNZ		K6
+			JMP		DOWN4
+	  ;利用分支实现选手灯亮，以及状态从01H-->11H
+	 	K1:	
+	 			
+			MOV		AL,06H
+			MOV    STA,11H
+			JMP     DONE
+	 	K2:
+			MOV		AL,5BH
+			MOV    STA,11H
+			JMP     DONE
+	    	K3:	
+			MOV		AL,4FH
+			MOV    STA,11H
+			JMP     DONE
+		K4:	
+			MOV		AL,66H
+			MOV    STA,11H
+			JMP     DONE
+		K5:	
+			MOV		AL,6DH
+			MOV    STA,11H
+			JMP     DONE
+		K6:
+			MOV		AL,7DH
+			MOV    STA,11H
+			JMP     DONE
+DONE:	   
+			MOV		DX,P8255B
+			OUT		DX,AL
+DOWN4:		
+			POP	  	DX
+       		POP		AX
+       		RET
+SWITCH		ENDP   
+;---------------------------------------------------------------         	
+CODE        ENDS
+            END     START
+;---------------------------------------------------------------         	
+CODE        ENDS
+            END     START
+
+;https://chat.openai.com/share/a493ccef-54ea-454e-b9e7-622bac7cfda4
